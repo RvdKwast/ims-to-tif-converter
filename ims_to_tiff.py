@@ -9,18 +9,24 @@ from skimage.util import img_as_float, img_as_uint
 from tifffile import TiffWriter
 
 
-def get_bad_frame_index(first_time_point):
-    # Now go back through the frames looking for the zeros
-    # Find the index of the first zero-frame.
-    # Don't know why this bug exists, but it does, so have to deal.
-    # Compensate for single z-level stacks that don't need bad frame search.
-    if first_time_point.shape[0] == 1:
-        return 1
-    first_bad_frame_index = first_time_point.shape[0]
-    for i_z in range(first_time_point.shape[0])[::-1]:
-        if not first_time_point[i_z].any():
-            first_bad_frame_index = i_z
-    return max(1, first_bad_frame_index)
+def get_valid_z_count(h5_dataset, resolution_level, time_point, channels):
+    """Return the number of Z planes through the last non-zero plane.
+
+    Imaris IMS exports can contain trailing all-zero planes. A plane is retained
+    when any channel contains data, and all planes before the last populated
+    plane are preserved.
+    """
+    time_point_group = h5_dataset[resolution_level][time_point]
+    n_z_levels = time_point_group[channels[0]]["Data"].shape[0]
+
+    for i_z in range(n_z_levels - 1, -1, -1):
+        if any(
+            np.asarray(time_point_group[channel]["Data"][i_z]).any()
+            for channel in channels
+        ):
+            return i_z + 1
+
+    raise ValueError("The first time point contains no non-zero image planes.")
 
 
 # Return the resolution levels, time points, channels, z levels, rows, cols, etc.
@@ -75,20 +81,19 @@ def convert_to_tif(f_name):
         n_cols,
     ) = get_h5_file_info(base_data)
 
-    bad_index_start = get_bad_frame_index(
-        np.array(
-            base_data[resolution_levels[0]][time_points[0]][channels[0]]["Data"]
+    try:
+        valid_z_count = get_valid_z_count(
+            base_data, resolution_levels[0], time_points[0], channels
         )
-    )
-    if bad_index_start == 0:
-        raise SystemExit("No non-zero Z frames found; aborting conversion.")
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
 
     banner_text = "File Breakdown"
     print(banner_text)
     print("_" * len(banner_text))
     print("Channels: %d" % n_channels)
     print("Time Points: %d" % n_time_points)
-    print("Z Levels: %d" % bad_index_start)
+    print("Z Levels: %d" % valid_z_count)
     print("Native (rows, cols): (%d,%d)" % (n_rows, n_cols))
     print("_" * len(banner_text))
 
@@ -100,7 +105,7 @@ def convert_to_tif(f_name):
             dtype=np.uint16,
             shape=(
                 n_time_points,
-                bad_index_start,
+                valid_z_count,
                 n_channels,
                 n_rows,
                 n_cols,
@@ -110,10 +115,10 @@ def convert_to_tif(f_name):
 
         for i_t, t in enumerate(time_points):
             print("%s/%d" % (t, n_time_points - 1))
-            for i_z, z_lvl in enumerate(z_levels[:bad_index_start]):
+            for i_z, z_lvl in enumerate(z_levels[:valid_z_count]):
                 print(
                     "%s/%d Z %d/%d"
-                    % (t, n_time_points - 1, i_z + 1, bad_index_start)
+                    % (t, n_time_points - 1, i_z + 1, valid_z_count)
                 )
                 for i_channel, channel in enumerate(channels):
                     output_stack[i_t, i_z, i_channel] = img_as_uint(
@@ -158,20 +163,19 @@ def downsample_to_tif(f_name, ds_factor=8):
     )
     ds_n_rows, ds_n_cols = test_ds_frame.shape
 
-    bad_index_start = get_bad_frame_index(
-        np.array(
-            base_data[resolution_levels[0]][time_points[0]][channels[0]]["Data"]
+    try:
+        valid_z_count = get_valid_z_count(
+            base_data, resolution_levels[0], time_points[0], channels
         )
-    )
-    if bad_index_start == 0:
-        raise SystemExit("No non-zero Z frames found; aborting conversion.")
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
 
     banner_text = "File Breakdown"
     print(banner_text)
     print("_" * len(banner_text))
     print("Channels: %d" % n_channels)
     print("Time Points: %d" % n_time_points)
-    print("Z Levels: %d" % bad_index_start)
+    print("Z Levels: %d" % valid_z_count)
     print("Native (rows, cols): (%d,%d)" % (n_rows, n_cols))
     print("Downsampled (rows, cols): (%d,%d)" % (ds_n_rows, ds_n_cols))
     print("_" * len(banner_text))
@@ -185,7 +189,7 @@ def downsample_to_tif(f_name, ds_factor=8):
         output_stack = np.zeros(
             shape=(
                 n_time_points,
-                bad_index_start,
+                valid_z_count,
                 n_channels,
                 ds_n_rows,
                 ds_n_cols,
@@ -195,10 +199,10 @@ def downsample_to_tif(f_name, ds_factor=8):
 
         for i_t, t in enumerate(time_points):
             print("%s/%d" % (t, n_time_points - 1))
-            for i_z, z_lvl in enumerate(z_levels[:bad_index_start]):
+            for i_z, z_lvl in enumerate(z_levels[:valid_z_count]):
                 print(
                     "%s/%d Z %d/%d"
-                    % (t, n_time_points - 1, i_z + 1, bad_index_start)
+                    % (t, n_time_points - 1, i_z + 1, valid_z_count)
                 )
                 for i_channel, channel in enumerate(channels):
                     output_stack[i_t, i_z, i_channel] = img_as_uint(
