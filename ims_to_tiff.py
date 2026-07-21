@@ -1,6 +1,4 @@
-import glob
-import os
-import sys
+import argparse
 import tempfile
 from pathlib import Path
 
@@ -31,8 +29,6 @@ def get_valid_z_count(h5_dataset, resolution_level, time_point, channels):
     raise ValueError("The first time point contains no non-zero image planes.")
 
 
-# Return the resolution levels, time points, channels, z levels, rows, cols, etc.
-# from an IMS file. Pass in the opened DataSet group.
 def get_h5_file_info(h5_dataset):
     resolution_levels = list(h5_dataset)
     resolution_levels.sort(key=lambda x: int(x.split(" ")[-1]))
@@ -93,8 +89,24 @@ def _create_temp_memmap(input_path, shape):
     return mmap_path, output_stack
 
 
-def convert_to_tif(f_name):
-    with h5py.File(f_name, "r") as read_file:
+def is_power_of_two(value):
+    return value > 0 and value & (value - 1) == 0
+
+
+def get_output_path(input_path, ds_factor):
+    input_path = Path(input_path)
+    if ds_factor == 1:
+        return input_path.with_suffix(".tif")
+    return input_path.with_name(f"{input_path.stem}_downsampled_{ds_factor}X.tif")
+
+
+def convert_to_tif(f_name, output_path=None):
+    input_path = Path(f_name)
+    output_path = (
+        Path(output_path) if output_path is not None else get_output_path(input_path, 1)
+    )
+
+    with h5py.File(input_path, "r") as read_file:
         base_data = read_file["DataSet"]
 
         (
@@ -122,9 +134,8 @@ def convert_to_tif(f_name):
         print("Native (rows, cols): (%d,%d)" % (n_rows, n_cols))
         print("_" * len(banner_text))
 
-        output_name = f_name.rsplit(".", maxsplit=1)[0].split("/")[-1] + ".tif"
         mmap_path, output_stack = _create_temp_memmap(
-            f_name,
+            input_path,
             (
                 n_time_points,
                 valid_z_count,
@@ -152,15 +163,24 @@ def convert_to_tif(f_name):
                         )
 
             output_stack.flush()
-            with TiffWriter(output_name, imagej=True) as out_tif:
+            with TiffWriter(output_path, imagej=True) as out_tif:
                 out_tif.write(output_stack, metadata={"axes": "TZCYX"})
         finally:
             output_stack._mmap.close()
             mmap_path.unlink(missing_ok=True)
 
+    return output_path
 
-def downsample_to_tif(f_name, ds_factor=8):
-    with h5py.File(f_name, "r") as read_file:
+
+def downsample_to_tif(f_name, ds_factor=8, output_path=None):
+    input_path = Path(f_name)
+    output_path = (
+        Path(output_path)
+        if output_path is not None
+        else get_output_path(input_path, ds_factor)
+    )
+
+    with h5py.File(input_path, "r") as read_file:
         base_data = read_file["DataSet"]
 
         (
@@ -176,7 +196,7 @@ def downsample_to_tif(f_name, ds_factor=8):
         ) = get_h5_file_info(base_data)
 
         if ds_factor < 2:
-            raise SystemExit("Downsample factor must be >=2")
+            raise ValueError("Downsample factor must be at least 2.")
 
         test_ds_frame = pyramid_reduce(
             np.array(
@@ -202,10 +222,8 @@ def downsample_to_tif(f_name, ds_factor=8):
         print("Downsampled (rows, cols): (%d,%d)" % (ds_n_rows, ds_n_cols))
         print("_" * len(banner_text))
 
-        f_ending = "_downsampled_%dX.tif" % ds_factor
-        output_name = f_name.rsplit(".", maxsplit=1)[0].split("/")[-1] + f_ending
         mmap_path, output_stack = _create_temp_memmap(
-            f_name,
+            input_path,
             (
                 n_time_points,
                 valid_z_count,
@@ -238,53 +256,94 @@ def downsample_to_tif(f_name, ds_factor=8):
                         )
 
             output_stack.flush()
-            with TiffWriter(output_name, imagej=True) as out_tif:
+            with TiffWriter(output_path, imagej=True) as out_tif:
                 out_tif.write(output_stack, metadata={"axes": "TZCYX"})
         finally:
             output_stack._mmap.close()
             mmap_path.unlink(missing_ok=True)
 
+    return output_path
 
-def driver(passed_files, ds_factor=1):
-    if not bin(ds_factor).count("1") == 1:
-        raise SystemExit("Invalid downsample factor. Must be a power of two.")
 
-    if ds_factor > 1:
-        downsampled = True
-        converter_func = downsample_to_tif
-    else:
-        downsampled = False
-        converter_func = convert_to_tif
+def driver(passed_files, ds_factor=1, overwrite=False):
+    if not is_power_of_two(ds_factor):
+        raise SystemExit(
+            "Invalid downsample factor. Use a positive power of two: 1, 2, 4, 8, ..."
+        )
 
-    for f_name in passed_files:
-        print("")
-        print("Processing %s" % f_name)
-        print("")
+    input_paths = [Path(path).expanduser().resolve() for path in passed_files]
+    if not input_paths:
+        raise SystemExit("No IMS files were provided or found in the current directory.")
 
-        if downsampled:
-            converter_func(f_name, ds_factor)
+    invalid_paths = [
+        path
+        for path in input_paths
+        if not path.is_file() or path.suffix.lower() != ".ims"
+    ]
+    if invalid_paths:
+        formatted = "\n".join(f"- {path}" for path in invalid_paths)
+        raise SystemExit(f"Invalid IMS input file(s):\n{formatted}")
+
+    jobs = [(input_path, get_output_path(input_path, ds_factor)) for input_path in input_paths]
+    existing_outputs = [output_path for _, output_path in jobs if output_path.exists()]
+    if existing_outputs and not overwrite:
+        formatted = "\n".join(f"- {path}" for path in existing_outputs)
+        raise SystemExit(
+            "Output file(s) already exist. Use --overwrite to replace them:\n"
+            f"{formatted}"
+        )
+
+    converter_func = downsample_to_tif if ds_factor > 1 else convert_to_tif
+    output_paths = []
+
+    for input_path, output_path in jobs:
+        print(f"\nProcessing {input_path}\n")
+        if ds_factor > 1:
+            converter_func(input_path, ds_factor, output_path=output_path)
         else:
-            converter_func(f_name)
+            converter_func(input_path, output_path=output_path)
+        output_paths.append(output_path)
 
-    print("")
-    print("Processed:")
-    for f_name in passed_files:
-        print(f_name)
-    input("Press Enter To Exit")
-    exit(0)
+    print("\nProcessed:")
+    for output_path in output_paths:
+        print(output_path)
+
+    return output_paths
 
 
-def main():
-    tif_files = glob.glob("*.tif")
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Convert Imaris/Fusion IMS files to ImageJ-compatible TIFF files."
+    )
+    parser.add_argument(
+        "downsample_factor",
+        nargs="?",
+        type=int,
+        default=1,
+        help="Positive power-of-two XY downsampling factor (default: 1).",
+    )
+    parser.add_argument(
+        "files",
+        nargs="*",
+        type=Path,
+        help="IMS files to convert. Defaults to all *.ims files in the current directory.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace output TIFF files that already exist.",
+    )
+    return parser
 
-    if len(tif_files) > 0:
-        raise SystemExit("Conversion has already been run in this directory. Exiting.")
 
-    ds_factor = int(sys.argv[1])
-    ims_files = glob.glob("*.ims")
-    cwd = os.getcwd() + "/"
-    ims_files = [cwd + f_name for f_name in ims_files]
-    driver(ims_files, ds_factor)
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    ims_files = args.files or sorted(
+        path
+        for path in Path.cwd().iterdir()
+        if path.is_file() and path.suffix.lower() == ".ims"
+    )
+    driver(ims_files, args.downsample_factor, overwrite=args.overwrite)
 
 
 if __name__ == "__main__":
