@@ -163,6 +163,8 @@ def downsample_to_tif(f_name, ds_factor=8):
             base_data[resolution_levels[0]][time_points[0]][channels[0]]["Data"]
         )
     )
+    if bad_index_start == 0:
+        raise SystemExit("No non-zero Z frames found; aborting conversion.")
 
     banner_text = "File Breakdown"
     print(banner_text)
