@@ -163,9 +163,12 @@ def downsample_to_tif(f_name, ds_factor=8):
     )
     ds_n_rows, ds_n_cols = test_ds_frame.shape
 
-    valid_z_count = get_valid_z_count(
-        base_data, resolution_levels[0], time_points[0], channels
-    )
+    try:
+        valid_z_count = get_valid_z_count(
+            base_data, resolution_levels[0], time_points[0], channels
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
 
     banner_text = "File Breakdown"
     print(banner_text)
