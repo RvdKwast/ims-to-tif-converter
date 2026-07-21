@@ -94,7 +94,7 @@ def convert_to_tif(f_name):
     print("Native (rows, cols): (%d,%d)" % (n_rows, n_cols))
     print("_" * len(banner_text))
 
-    output_name = f_name.rsplit(".", maxsplit=1)[0].split("/")[-1] + ".tif"
+    output_name = os.path.splitext(os.path.basename(f_name))[0] + ".tif"
     with TiffWriter(output_name, imagej=True) as out_tif:
         mmap_fname = f_name + ".mmap"
         output_stack = np.memmap(
@@ -130,6 +130,7 @@ def convert_to_tif(f_name):
 
         del output_stack
         os.remove(mmap_fname)
+    read_file.close()
 
 
 def downsample_to_tif(f_name, ds_factor=8):
@@ -176,7 +177,7 @@ def downsample_to_tif(f_name, ds_factor=8):
     f_ending = "_downsampled_%dX.tif" % ds_factor
 
     with TiffWriter(
-        f_name.rsplit(".", maxsplit=1)[0].split("/")[-1] + f_ending,
+        os.path.splitext(os.path.basename(f_name))[0] + f_ending,
         imagej=True,
     ) as out_tif:
         output_stack = np.zeros(
@@ -213,6 +214,7 @@ def downsample_to_tif(f_name, ds_factor=8):
 
         out_tif.write(output_stack, metadata={"axes": "TZCYX"})
         del output_stack
+    read_file.close()
 
 
 def driver(passed_files, ds_factor=1):
