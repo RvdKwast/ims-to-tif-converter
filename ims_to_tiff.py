@@ -16,11 +16,11 @@ def get_bad_frame_index(first_time_point):
     # Compensate for single z-level stacks that don't need bad frame search.
     if first_time_point.shape[0] == 1:
         return 1
-    first_bad_frame_index = first_time_point.shape[0] - 1
+    first_bad_frame_index = first_time_point.shape[0]
     for i_z in range(first_time_point.shape[0])[::-1]:
         if not first_time_point[i_z].any():
             first_bad_frame_index = i_z
-    return first_bad_frame_index
+    return max(1, first_bad_frame_index)
 
 
 # Return the resolution levels, time points, channels, z levels, rows, cols, etc.
@@ -86,11 +86,11 @@ def convert_to_tif(f_name):
     print("_" * len(banner_text))
     print("Channels: %d" % n_channels)
     print("Time Points: %d" % n_time_points)
-    print("Z Levels: %d" % (bad_index_start + 1))
+    print("Z Levels: %d" % bad_index_start)
     print("Native (rows, cols): (%d,%d)" % (n_rows, n_cols))
     print("_" * len(banner_text))
 
-    output_name = f_name.rsplit(".", maxsplit=1)[0].split("/")[-1] + ".tif"
+    output_name = os.path.splitext(os.path.basename(f_name))[0] + ".tif"
     with TiffWriter(output_name, imagej=True) as out_tif:
         mmap_fname = f_name + ".mmap"
         output_stack = np.memmap(
@@ -126,6 +126,7 @@ def convert_to_tif(f_name):
 
         del output_stack
         os.remove(mmap_fname)
+    read_file.close()
 
 
 def downsample_to_tif(f_name, ds_factor=8):
@@ -166,7 +167,7 @@ def downsample_to_tif(f_name, ds_factor=8):
     print("_" * len(banner_text))
     print("Channels: %d" % n_channels)
     print("Time Points: %d" % n_time_points)
-    print("Z Levels: %d" % (bad_index_start + 1))
+    print("Z Levels: %d" % bad_index_start)
     print("Native (rows, cols): (%d,%d)" % (n_rows, n_cols))
     print("Downsampled (rows, cols): (%d,%d)" % (ds_n_rows, ds_n_cols))
     print("_" * len(banner_text))
@@ -174,7 +175,7 @@ def downsample_to_tif(f_name, ds_factor=8):
     f_ending = "_downsampled_%dX.tif" % ds_factor
 
     with TiffWriter(
-        f_name.rsplit(".", maxsplit=1)[0].split("/")[-1] + f_ending,
+        os.path.splitext(os.path.basename(f_name))[0] + f_ending,
         imagej=True,
     ) as out_tif:
         output_stack = np.zeros(
@@ -211,6 +212,7 @@ def downsample_to_tif(f_name, ds_factor=8):
 
         out_tif.write(output_stack, metadata={"axes": "TZCYX"})
         del output_stack
+    read_file.close()
 
 
 def driver(passed_files, ds_factor=1):
