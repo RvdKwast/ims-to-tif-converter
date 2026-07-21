@@ -1,24 +1,29 @@
 # ims-to-tif-converter
-Converts Fusion IMS files to TIF files
 
-Requirements:
-sys
-PIL (pillow)
-scikit-image
-numpy
-h5py
-os
-glob
+Convert Imaris/Fusion `.ims` HDF5 image stacks to ImageJ-compatible TIFF
+hyperstacks, with optional power-of-two XY downsampling.
 
-Usage:
-1. Navigate to a directory containing only IMS files. The script will abort if
-   there are any .tif files present.
-2. Run the script with "python <full_path_to_script> <downsample_level>" where
-   <full_path_to_script> should be replaced with the full path to where you
-   saved the driver script, and <downsample_level> should be replaced with the
-   downsample ratio that you desire. The downsample level must be a factor
-   of two, and divide evenly into the dimensions of your image. 
+## Installation
 
-Use 1 for your downsample ratio if you want a straight conversion. Otherwise,
-the dimensionality of your image will be divided by the supplied downsample
-level in the output.
+Create a Python environment and install the runtime dependencies:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+The converter depends on `h5py`, `numpy`, `scikit-image`, and the standalone
+`tifffile` package.
+
+## Usage
+
+Run the script from a directory containing the `.ims` files to convert:
+
+```bash
+python /full/path/to/ims_to_tiff.py <downsample_factor>
+```
+
+Use `1` for a direct conversion. Use a positive power of two such as `2`, `4`,
+or `8` to reduce the X and Y dimensions by that factor.
+
+The current command scans the working directory for `*.ims` files and exits if
+the directory already contains a `.tif` file.
