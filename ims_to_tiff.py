@@ -1,6 +1,8 @@
 import glob
 import os
 import sys
+import tempfile
+from pathlib import Path
 
 import h5py
 import numpy as np
@@ -65,154 +67,182 @@ def get_h5_file_info(h5_dataset):
     )
 
 
-def convert_to_tif(f_name):
-    read_file = h5py.File(f_name, "r")
-    base_data = read_file["DataSet"]
-
-    (
-        resolution_levels,
-        time_points,
-        n_time_points,
-        channels,
-        n_channels,
-        n_z_levels,
-        z_levels,
-        n_rows,
-        n_cols,
-    ) = get_h5_file_info(base_data)
-
-    valid_z_count = get_valid_z_count(
-        base_data, resolution_levels[0], time_points[0], channels
+def _create_temp_memmap(input_path, shape):
+    """Create a disk-backed uint16 array next to the input file."""
+    input_path = Path(input_path)
+    temp_file = tempfile.NamedTemporaryFile(
+        prefix=f"{input_path.stem}.",
+        suffix=".mmap",
+        dir=input_path.parent,
+        delete=False,
     )
+    mmap_path = Path(temp_file.name)
+    temp_file.close()
 
-    banner_text = "File Breakdown"
-    print(banner_text)
-    print("_" * len(banner_text))
-    print("Channels: %d" % n_channels)
-    print("Time Points: %d" % n_time_points)
-    print("Z Levels: %d" % valid_z_count)
-    print("Native (rows, cols): (%d,%d)" % (n_rows, n_cols))
-    print("_" * len(banner_text))
-
-    output_name = f_name.rsplit(".", maxsplit=1)[0].split("/")[-1] + ".tif"
-    with TiffWriter(output_name, imagej=True) as out_tif:
-        mmap_fname = f_name + ".mmap"
+    try:
         output_stack = np.memmap(
-            mmap_fname,
+            mmap_path,
             dtype=np.uint16,
-            shape=(
+            shape=shape,
+            mode="w+",
+        )
+    except Exception:
+        mmap_path.unlink(missing_ok=True)
+        raise
+
+    return mmap_path, output_stack
+
+
+def convert_to_tif(f_name):
+    with h5py.File(f_name, "r") as read_file:
+        base_data = read_file["DataSet"]
+
+        (
+            resolution_levels,
+            time_points,
+            n_time_points,
+            channels,
+            n_channels,
+            n_z_levels,
+            z_levels,
+            n_rows,
+            n_cols,
+        ) = get_h5_file_info(base_data)
+
+        valid_z_count = get_valid_z_count(
+            base_data, resolution_levels[0], time_points[0], channels
+        )
+
+        banner_text = "File Breakdown"
+        print(banner_text)
+        print("_" * len(banner_text))
+        print("Channels: %d" % n_channels)
+        print("Time Points: %d" % n_time_points)
+        print("Z Levels: %d" % valid_z_count)
+        print("Native (rows, cols): (%d,%d)" % (n_rows, n_cols))
+        print("_" * len(banner_text))
+
+        output_name = f_name.rsplit(".", maxsplit=1)[0].split("/")[-1] + ".tif"
+        mmap_path, output_stack = _create_temp_memmap(
+            f_name,
+            (
                 n_time_points,
                 valid_z_count,
                 n_channels,
                 n_rows,
                 n_cols,
             ),
-            mode="w+",
         )
 
-        for i_t, t in enumerate(time_points):
-            print("%s/%d" % (t, n_time_points - 1))
-            for i_z, z_lvl in enumerate(z_levels[:valid_z_count]):
-                print(
-                    "%s/%d Z %d/%d"
-                    % (t, n_time_points - 1, i_z + 1, valid_z_count)
-                )
-                for i_channel, channel in enumerate(channels):
-                    output_stack[i_t, i_z, i_channel] = img_as_uint(
-                        np.array(
-                            base_data[resolution_levels[0]][time_points[i_t]][
-                                channels[i_channel]
-                            ]["Data"][i_z]
-                        )
+        try:
+            for i_t, t in enumerate(time_points):
+                print("%s/%d" % (t, n_time_points - 1))
+                for i_z, z_lvl in enumerate(z_levels[:valid_z_count]):
+                    print(
+                        "%s/%d Z %d/%d"
+                        % (t, n_time_points - 1, i_z + 1, valid_z_count)
                     )
+                    for i_channel, channel in enumerate(channels):
+                        output_stack[i_t, i_z, i_channel] = img_as_uint(
+                            np.array(
+                                base_data[resolution_levels[0]][time_points[i_t]][
+                                    channels[i_channel]
+                                ]["Data"][i_z]
+                            )
+                        )
 
-        out_tif.write(output_stack, metadata={"axes": "TZCYX"})
-
-        del output_stack
-        os.remove(mmap_fname)
+            output_stack.flush()
+            with TiffWriter(output_name, imagej=True) as out_tif:
+                out_tif.write(output_stack, metadata={"axes": "TZCYX"})
+        finally:
+            output_stack._mmap.close()
+            mmap_path.unlink(missing_ok=True)
 
 
 def downsample_to_tif(f_name, ds_factor=8):
-    read_file = h5py.File(f_name, "r")
-    base_data = read_file["DataSet"]
+    with h5py.File(f_name, "r") as read_file:
+        base_data = read_file["DataSet"]
 
-    (
-        resolution_levels,
-        time_points,
-        n_time_points,
-        channels,
-        n_channels,
-        n_z_levels,
-        z_levels,
-        n_rows,
-        n_cols,
-    ) = get_h5_file_info(base_data)
+        (
+            resolution_levels,
+            time_points,
+            n_time_points,
+            channels,
+            n_channels,
+            n_z_levels,
+            z_levels,
+            n_rows,
+            n_cols,
+        ) = get_h5_file_info(base_data)
 
-    if ds_factor < 2:
-        raise SystemExit("Downsample factor must be >=2")
+        if ds_factor < 2:
+            raise SystemExit("Downsample factor must be >=2")
 
-    test_ds_frame = pyramid_reduce(
-        np.array(
-            base_data[resolution_levels[0]][time_points[0]][channels[0]]["Data"][0]
-        ),
-        downscale=ds_factor,
-    )
-    ds_n_rows, ds_n_cols = test_ds_frame.shape
+        test_ds_frame = pyramid_reduce(
+            np.array(
+                base_data[resolution_levels[0]][time_points[0]][channels[0]][
+                    "Data"
+                ][0]
+            ),
+            downscale=ds_factor,
+        )
+        ds_n_rows, ds_n_cols = test_ds_frame.shape
 
-    valid_z_count = get_valid_z_count(
-        base_data, resolution_levels[0], time_points[0], channels
-    )
+        valid_z_count = get_valid_z_count(
+            base_data, resolution_levels[0], time_points[0], channels
+        )
 
-    banner_text = "File Breakdown"
-    print(banner_text)
-    print("_" * len(banner_text))
-    print("Channels: %d" % n_channels)
-    print("Time Points: %d" % n_time_points)
-    print("Z Levels: %d" % valid_z_count)
-    print("Native (rows, cols): (%d,%d)" % (n_rows, n_cols))
-    print("Downsampled (rows, cols): (%d,%d)" % (ds_n_rows, ds_n_cols))
-    print("_" * len(banner_text))
+        banner_text = "File Breakdown"
+        print(banner_text)
+        print("_" * len(banner_text))
+        print("Channels: %d" % n_channels)
+        print("Time Points: %d" % n_time_points)
+        print("Z Levels: %d" % valid_z_count)
+        print("Native (rows, cols): (%d,%d)" % (n_rows, n_cols))
+        print("Downsampled (rows, cols): (%d,%d)" % (ds_n_rows, ds_n_cols))
+        print("_" * len(banner_text))
 
-    f_ending = "_downsampled_%dX.tif" % ds_factor
-
-    with TiffWriter(
-        f_name.rsplit(".", maxsplit=1)[0].split("/")[-1] + f_ending,
-        imagej=True,
-    ) as out_tif:
-        output_stack = np.zeros(
-            shape=(
+        f_ending = "_downsampled_%dX.tif" % ds_factor
+        output_name = f_name.rsplit(".", maxsplit=1)[0].split("/")[-1] + f_ending
+        mmap_path, output_stack = _create_temp_memmap(
+            f_name,
+            (
                 n_time_points,
                 valid_z_count,
                 n_channels,
                 ds_n_rows,
                 ds_n_cols,
             ),
-            dtype=np.uint16,
         )
 
-        for i_t, t in enumerate(time_points):
-            print("%s/%d" % (t, n_time_points - 1))
-            for i_z, z_lvl in enumerate(z_levels[:valid_z_count]):
-                print(
-                    "%s/%d Z %d/%d"
-                    % (t, n_time_points - 1, i_z + 1, valid_z_count)
-                )
-                for i_channel, channel in enumerate(channels):
-                    output_stack[i_t, i_z, i_channel] = img_as_uint(
-                        pyramid_reduce(
-                            img_as_float(
-                                np.array(
-                                    base_data[resolution_levels[0]][time_points[i_t]][
-                                        channels[i_channel]
-                                    ]["Data"][i_z]
-                                )
-                            ),
-                            downscale=ds_factor,
-                        )
+        try:
+            for i_t, t in enumerate(time_points):
+                print("%s/%d" % (t, n_time_points - 1))
+                for i_z, z_lvl in enumerate(z_levels[:valid_z_count]):
+                    print(
+                        "%s/%d Z %d/%d"
+                        % (t, n_time_points - 1, i_z + 1, valid_z_count)
                     )
+                    for i_channel, channel in enumerate(channels):
+                        output_stack[i_t, i_z, i_channel] = img_as_uint(
+                            pyramid_reduce(
+                                img_as_float(
+                                    np.array(
+                                        base_data[resolution_levels[0]][
+                                            time_points[i_t]
+                                        ][channels[i_channel]]["Data"][i_z]
+                                    )
+                                ),
+                                downscale=ds_factor,
+                            )
+                        )
 
-        out_tif.write(output_stack, metadata={"axes": "TZCYX"})
-        del output_stack
+            output_stack.flush()
+            with TiffWriter(output_name, imagej=True) as out_tif:
+                out_tif.write(output_stack, metadata={"axes": "TZCYX"})
+        finally:
+            output_stack._mmap.close()
+            mmap_path.unlink(missing_ok=True)
 
 
 def driver(passed_files, ds_factor=1):
